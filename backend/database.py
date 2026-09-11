@@ -1,6 +1,8 @@
 import os
+import re
 import sqlite3
 from datetime import datetime
+from difflib import SequenceMatcher
 
 DB_NAME = "clippings.db"
 
@@ -8,6 +10,205 @@ def get_connection():
     conn = sqlite3.connect(DB_NAME, timeout=15.0)
     conn.row_factory = sqlite3.Row
     return conn
+
+def parse_location_range(loc_str):
+    """將位置字串解析為數值區間 (start, end)"""
+    if not loc_str:
+        return None
+    nums = [int(n) for n in re.findall(r'\d+', str(loc_str))]
+    if not nums:
+        return None
+    if len(nums) == 1:
+        return nums[0], nums[0]
+    return min(nums[0], nums[1]), max(nums[0], nums[1])
+
+def is_location_overlapping(loc1, loc2):
+    """檢查兩個位置區間是否有重疊"""
+    r1 = parse_location_range(loc1)
+    r2 = parse_location_range(loc2)
+    if not r1 or not r2:
+        return False
+    return max(r1[0], r2[0]) <= min(r1[1], r2[1])
+
+def is_duplicate_clipping(content1, loc1, content2, loc2):
+    """
+    判定兩則標註是否為重複項：
+    1. 位置字串完全相同
+    2. 雙向文字相似度 >= 80%
+    3. 單向包含覆蓋率 >= 80%，且位置區間重疊或短字串達 20 字以上
+    """
+    if loc1 == loc2:
+        return True
+
+    c1 = (content1 or "").strip()
+    c2 = (content2 or "").strip()
+
+    if c1 and c2:
+        sm = SequenceMatcher(None, c1, c2)
+        full_ratio = sm.ratio()
+
+        matching_chars = sum(match.size for match in sm.get_matching_blocks())
+        min_len = min(len(c1), len(c2))
+        containment_ratio = (matching_chars / min_len) if min_len > 0 else 0.0
+
+        loc_overlap = is_location_overlapping(loc1, loc2)
+
+        if (full_ratio >= 0.80) or (containment_ratio >= 0.80 and (loc_overlap or min_len >= 20)):
+            return True
+
+    if not c1 and not c2 and is_location_overlapping(loc1, loc2):
+        return True
+
+    return False
+
+def parse_iso_datetime(dt_val):
+    if isinstance(dt_val, str):
+        try:
+            return datetime.fromisoformat(dt_val)
+        except Exception:
+            return datetime.min
+    if isinstance(dt_val, datetime):
+        return dt_val
+    return datetime.min
+
+def stitch_adjacent_fragments():
+    """
+    掃描資料庫，自動將跨頁中斷且以接續標點開頭的後半句拼回前半句中
+    """
+    continuation_punctuations = ("，", "、", "；", "：", "」", "』", "）", ")", "]", "}", "。")
+
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT DISTINCT book_title, clipping_type FROM clippings")
+        groups = cursor.fetchall()
+
+        for g in groups:
+            b_title = g["book_title"]
+            c_type = g["clipping_type"]
+
+            cursor.execute("""
+                SELECT id, book_title, author, location, clipping_type, content, clipped_at, is_starred
+                FROM clippings
+                WHERE book_title = ? AND clipping_type = ?
+            """, (b_title, c_type))
+            rows = [dict(r) for r in cursor.fetchall()]
+
+            # 依位置起點進行排序
+            valid_rows = []
+            for r in rows:
+                rng = parse_location_range(r["location"])
+                if rng:
+                    r["_start"], r["_end"] = rng
+                    valid_rows.append(r)
+
+            valid_rows.sort(key=lambda x: (x["_start"], x["_end"]))
+
+            i = 0
+            while i < len(valid_rows) - 1:
+                curr_item = valid_rows[i]
+                next_item = valid_rows[i + 1]
+
+                next_content = (next_item["content"] or "").strip()
+                curr_content = (curr_item["content"] or "").strip()
+
+                # 判定後半段是否為斷句碎片（以標點開頭）且位置緊鄰（間距 <= 10）
+                starts_with_punct = next_content.startswith(continuation_punctuations)
+                loc_gap = next_item["_start"] - curr_item["_end"]
+                is_adjacent = 0 <= loc_gap <= 10
+
+                if starts_with_punct and is_adjacent and curr_content:
+                    # 去除前半段結尾可能殘留的句點，再拼接後半段
+                    clean_prev = re.sub(r'。$', '', curr_content)
+                    merged_content = clean_prev + next_content
+                    new_location = f"{curr_item['_start']}-{max(curr_item['_end'], next_item['_end'])}"
+
+                    # 取較新時間
+                    t1 = parse_iso_datetime(curr_item["clipped_at"])
+                    t2 = parse_iso_datetime(next_item["clipped_at"])
+                    latest_time = max(t1, t2).isoformat()
+
+                    merged_star = 1 if (curr_item["is_starred"] == 1 or next_item["is_starred"] == 1) else 0
+
+                    # 更新基準紀錄並刪除碎片紀錄
+                    cursor.execute("""
+                        UPDATE clippings 
+                        SET content = ?, location = ?, clipped_at = ?, is_starred = ?
+                        WHERE id = ?
+                    """, (merged_content, new_location, latest_time, merged_star, curr_item["id"]))
+
+                    cursor.execute("DELETE FROM clippings WHERE id = ?", (next_item["id"],))
+
+                    # 更新記憶體內資料以便繼續檢查後續項目
+                    curr_item["content"] = merged_content
+                    curr_item["location"] = new_location
+                    curr_item["_end"] = max(curr_item["_end"], next_item["_end"])
+                    curr_item["clipped_at"] = latest_time
+                    curr_item["is_starred"] = merged_star
+
+                    valid_rows.pop(i + 1)
+                else:
+                    i += 1
+
+        conn.commit()
+
+def deduplicate_existing_clippings():
+    """
+    掃描資料庫中既有標註，刪除重複項僅保留最新紀錄
+    """
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT DISTINCT book_title, clipping_type FROM clippings")
+        groups = cursor.fetchall()
+
+        total_deleted = 0
+
+        for g in groups:
+            b_title = g["book_title"]
+            c_type = g["clipping_type"]
+
+            cursor.execute("""
+                SELECT id, book_title, author, location, clipping_type, content, clipped_at, is_starred
+                FROM clippings
+                WHERE book_title = ? AND clipping_type = ?
+                ORDER BY id ASC
+            """, (b_title, c_type))
+            rows = [dict(r) for r in cursor.fetchall()]
+
+            if len(rows) <= 1:
+                continue
+
+            clusters = []
+            for row in rows:
+                matched_cluster = None
+                for cluster in clusters:
+                    for member in cluster:
+                        if is_duplicate_clipping(row["content"], row["location"], member["content"], member["location"]):
+                            matched_cluster = cluster
+                            break
+                    if matched_cluster:
+                        break
+                if matched_cluster:
+                    matched_cluster.append(row)
+                else:
+                    clusters.append([row])
+
+            for cluster in clusters:
+                if len(cluster) > 1:
+                    cluster.sort(key=lambda x: parse_iso_datetime(x["clipped_at"]), reverse=True)
+                    keep_item = cluster[0]
+                    delete_items = cluster[1:]
+
+                    any_starred = any(x["is_starred"] == 1 for x in cluster)
+                    if any_starred and keep_item["is_starred"] != 1:
+                        cursor.execute("UPDATE clippings SET is_starred = 1 WHERE id = ?", (keep_item["id"],))
+
+                    del_ids = [x["id"] for x in delete_items]
+                    placeholders = ",".join("?" for _ in del_ids)
+                    cursor.execute(f"DELETE FROM clippings WHERE id IN ({placeholders})", del_ids)
+                    total_deleted += len(del_ids)
+
+        conn.commit()
+        return total_deleted
 
 def init_db():
     with get_connection() as conn:
@@ -48,35 +249,87 @@ def init_db():
         """)
         conn.commit()
 
+    deduplicate_existing_clippings()
+    stitch_adjacent_fragments()
+
 def upsert_clipping(book_title, author, location, clipping_type, content, clipped_at):
+    """
+    匯入單筆標註：比對重複與時間，完成後執行斷句拼接
+    """
+    clean_content = (content or "").strip()
+
     with get_connection() as conn:
         cursor = conn.cursor()
+        
         cursor.execute("""
-            SELECT id, clipped_at FROM clippings 
-            WHERE book_title = ? AND location = ? AND clipping_type = ?
-        """, (book_title, location, clipping_type))
+            SELECT id, location, content, clipped_at, author, is_starred 
+            FROM clippings 
+            WHERE book_title = ? AND clipping_type = ?
+        """, (book_title, clipping_type))
+        candidates = [dict(r) for r in cursor.fetchall()]
         
-        existing = cursor.fetchone()
-        
-        if existing is None:
+        matched_candidates = []
+        for cand in candidates:
+            if is_duplicate_clipping(clean_content, location, cand["content"], cand["location"]):
+                matched_candidates.append(cand)
+
+        status = "INSERTED"
+
+        if not matched_candidates:
             cursor.execute("""
                 INSERT INTO clippings (book_title, author, location, clipping_type, content, clipped_at, is_starred)
                 VALUES (?, ?, ?, ?, ?, ?, 0)
             """, (book_title, author, location, clipping_type, content, clipped_at.isoformat()))
             conn.commit()
-            return "INSERTED"
+            status = "INSERTED"
         else:
-            existing_time = datetime.fromisoformat(existing["clipped_at"])
-            if clipped_at > existing_time:
-                cursor.execute("""
-                    UPDATE clippings 
-                    SET content = ?, clipped_at = ?, author = ?
-                    WHERE id = ?
-                """, (content, clipped_at.isoformat(), author, existing["id"]))
+            matched_candidates.sort(key=lambda x: parse_iso_datetime(x["clipped_at"]), reverse=True)
+            newest_cand = matched_candidates[0]
+            newest_cand_time = parse_iso_datetime(newest_cand["clipped_at"])
+
+            any_starred = any(c["is_starred"] == 1 for c in matched_candidates)
+
+            if clipped_at > newest_cand_time:
+                target_id = newest_cand["id"]
+                target_starred = 1 if any_starred else 0
+
+                try:
+                    cursor.execute("""
+                        UPDATE clippings 
+                        SET content = ?, clipped_at = ?, location = ?, author = ?, is_starred = ?
+                        WHERE id = ?
+                    """, (content, clipped_at.isoformat(), location, author, target_starred, target_id))
+                except sqlite3.IntegrityError:
+                    cursor.execute("""
+                        UPDATE clippings 
+                        SET content = ?, clipped_at = ?, author = ?, is_starred = ?
+                        WHERE id = ?
+                    """, (content, clipped_at.isoformat(), author, target_starred, target_id))
+
+                del_ids = [c["id"] for c in matched_candidates if c["id"] != target_id]
+                if del_ids:
+                    placeholders = ",".join("?" for _ in del_ids)
+                    cursor.execute(f"DELETE FROM clippings WHERE id IN ({placeholders})", del_ids)
+
                 conn.commit()
-                return "UPDATED"
+                status = "UPDATED"
             else:
-                return "SKIPPED"
+                target_id = newest_cand["id"]
+                target_starred = 1 if any_starred else newest_cand["is_starred"]
+
+                if target_starred != newest_cand["is_starred"]:
+                    cursor.execute("UPDATE clippings SET is_starred = ? WHERE id = ?", (target_starred, target_id))
+
+                del_ids = [c["id"] for c in matched_candidates if c["id"] != target_id]
+                if del_ids:
+                    placeholders = ",".join("?" for _ in del_ids)
+                    cursor.execute(f"DELETE FROM clippings WHERE id IN ({placeholders})", del_ids)
+
+                conn.commit()
+                status = "SKIPPED"
+
+    stitch_adjacent_fragments()
+    return status
 
 def get_all_clippings():
     with get_connection() as conn:
@@ -186,14 +439,11 @@ def get_full_export_data():
 
 def backup_database(dest_path):
     safe_dest_path = os.path.abspath(dest_path)
-    
-    # [修正 WinError 32]：明確關閉 SQLite 連線
     src = get_connection()
     dest = sqlite3.connect(safe_dest_path, timeout=15.0)
     try:
         src.backup(dest)
     finally:
-        # 強制釋放檔案控制權
         dest.close()
         src.close()
 
@@ -204,7 +454,6 @@ def restore_database(src_path):
         raise ValueError("無效的備份檔案路徑")
 
     try:
-        # [修正 WinError 32]：驗證階段完畢後強制關閉
         test_conn = sqlite3.connect(safe_src_path, timeout=5.0)
         try:
             cursor = test_conn.cursor()
@@ -216,7 +465,6 @@ def restore_database(src_path):
     except sqlite3.DatabaseError:
         raise ValueError("檔案毀損或非有效的 SQLite 資料庫檔案")
 
-    # [修正 WinError 32]：備份還原階段明確關閉連線
     dest = get_connection()
     src = sqlite3.connect(safe_src_path, timeout=15.0)
     try:

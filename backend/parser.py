@@ -2,39 +2,34 @@ import re
 from datetime import datetime
 from dateutil import parser as date_parser
 
+def clean_text(text):
+    """移除包含 BOM (\ufeff) 與頭尾空白的乾淨字串處理"""
+    if not text:
+        return ""
+    # 移除 UTF-8 BOM 與各類零寬字元
+    return text.replace("\ufeff", "").replace("\u200b", "").strip()
+
 def parse_metadata_line(meta_line):
-    """
-    解析第二行元資料：萃取類型、位置 (Location/Page) 與時間。
-    範例格式：
-    - 您在位置 #120-122 的標註 | 新增於 2024年3月15日 星期五 上午11:20:00
-    - Your Highlight on Location 120-122 | Added on Friday, March 15, 2024 11:20:00 AM
-    """
+    meta_line = clean_text(meta_line)
+    
     clipping_type = "Highlight"
     if "筆記" in meta_line or "Note" in meta_line:
         clipping_type = "Note"
     elif "書籤" in meta_line or "Bookmark" in meta_line:
         clipping_type = "Bookmark"
 
-    # 擷取位置數值 (例如: 120-122 或 55)
     loc_match = re.search(r'(?:位置|Location|page|頁)\s*#?([0-9]+-?[0-9]*)', meta_line, re.IGNORECASE)
     location = loc_match.group(1) if loc_match else "0"
 
-    # 擷取時間字串（以分隔符號 | 切割）
     time_part = meta_line.split("|")[-1].strip()
-    # 清理常見的時間前綴詞
     time_cleaned = re.sub(r'^(?:新增於|Added on)\s*', '', time_part)
-    
-    # 將中文字元（年/月/日/星期）標準化以利解析
     time_cleaned = re.sub(r'[年月]', '-', time_cleaned)
     time_cleaned = re.sub(r'日', ' ', time_cleaned)
     time_cleaned = re.sub(r'星期[一二三四五六日天]', '', time_cleaned)
 
     try:
-        # [安全修正] 防止針對 fuzzy parser 的 DoS 攻擊：限制傳入字串長度
-        # 一般合法時間字串不會超過 50 個字元，設 100 為絕對安全上限
         if len(time_cleaned) > 100:
-            raise ValueError("Time string abnormally long, skipping fuzzy parse")
-            
+            raise ValueError("時間字串異常過長")
         clipped_at = date_parser.parse(time_cleaned, fuzzy=True)
     except Exception:
         clipped_at = datetime.now()
@@ -43,38 +38,38 @@ def parse_metadata_line(meta_line):
 
 def parse_title_line(title_line):
     """
-    解析第一行：萃取書名與作者。
-    範例：原子習慣 (詹姆斯‧克利爾) -> 書名: 原子習慣, 作者: 詹姆斯‧克利爾
+    解析第一行：萃取書名與作者，處理巢狀括號與不可見字元。
     """
+    raw_title = clean_text(title_line)
     author = "Unknown"
-    title = title_line.strip()
-    
-    # [安全修正] 移除 (.*?) 與 \s* 的組合，改用貪婪匹配 (.*) 配合後方 .strip()
-    # 徹底消除正則表達式災難性回溯 (ReDoS) 的風險
-    match = re.search(r'^(.*)\(([^()]+)\)$', title)
-    if match:
-        title = match.group(1).strip()
-        author = match.group(2).strip()
-        
+    title = raw_title
+
+    # 尋找最外層的括號作為作者邊界
+    if raw_title.endswith(")"):
+        first_open_paren = raw_title.rfind(" (")
+        if first_open_paren != -1:
+            title = clean_text(raw_title[:first_open_paren])
+            author = clean_text(raw_title[first_open_paren + 2:-1])
+        else:
+            match = re.search(r'^(.*)\((.*)\)$', raw_title)
+            if match:
+                title = clean_text(match.group(1))
+                author = clean_text(match.group(2))
+
     return title, author
 
 def parse_clippings_file(file_content_str):
-    """
-    主解析流程：讀取整份文字檔字串，回傳結構化字典清單。
-    """
     raw_blocks = file_content_str.split("==========")
     parsed_items = []
 
     for block in raw_blocks:
-        # 去除頭尾多餘換行，過濾空白區塊
-        lines = [line.strip() for line in block.strip().splitlines() if line.strip()]
+        # 清理並過濾每行文字
+        lines = [clean_text(line) for line in block.splitlines() if clean_text(line)]
         if len(lines) < 2:
             continue
 
         book_title, author = parse_title_line(lines[0])
         clipping_type, location, clipped_at = parse_metadata_line(lines[1])
-        
-        # 標註或筆記的內文（第 3 行開始到最後）
         content = "\n".join(lines[2:]) if len(lines) >= 3 else ""
 
         parsed_items.append({
