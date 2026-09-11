@@ -9,7 +9,7 @@ let state = {
     startDate: "",
     endDate: "",
     onlyStarred: false,
-    hasNotesOnly: false, // 篩選有筆記之標註開關
+    hasNotesOnly: false,
     selectedClippingIds: new Set(),
     editingBookTitle: null,
     expandedNestedNoteIds: new Set()
@@ -19,6 +19,7 @@ let state = {
 const fileInput = document.getElementById("fileInput");
 const dropZone = document.getElementById("dropZone");
 const uploadStatus = document.getElementById("uploadStatus");
+const formatSelect = document.getElementById("formatSelect");
 const bookListEl = document.getElementById("bookList");
 const cardsContainer = document.getElementById("cardsContainer");
 const searchInput = document.getElementById("searchInput");
@@ -152,6 +153,9 @@ function setupUploadEvents() {
 async function uploadFile(file) {
     const formData = new FormData();
     formData.append("file", file);
+
+    const formatMode = formatSelect ? formatSelect.value : "kfx";
+    formData.append("format", formatMode);
 
     uploadStatus.style.color = "#4A90E2";
     uploadStatus.textContent = "檔案解析與同步中...";
@@ -333,7 +337,6 @@ function handleBookSelection(element, bookId, displayTitle) {
 
 // 8. 整合筆記巢狀結構與多維度過濾
 function getFilteredData() {
-    // 先在全域資料集中完成筆記與標註的位置區間包含比對
     const items = state.allClippings.map(item => ({ ...item, nestedNotes: [] }));
     const notes = items.filter(i => i.clipping_type.toLowerCase() === "note");
     const highlights = items.filter(i => i.clipping_type.toLowerCase() !== "note");
@@ -366,16 +369,13 @@ function getFilteredData() {
         }
     });
 
-    // 排除已被包含在標註下的獨立筆記，只處理頂層卡片
     const topLevelItems = items.filter(item => !nestedNoteIds.has(item.id));
 
     return topLevelItems.filter(item => {
-        // 書籍選取過濾
         if (state.selectedBook !== "ALL" && item.book_title !== state.selectedBook) {
             return false;
         }
 
-        // 「只看有筆記的標註」核心篩選：排除純筆記，且標註內必須包含至少 1 則關聯筆記
         if (state.hasNotesOnly) {
             const isHighlight = item.clipping_type.toLowerCase() !== "note";
             const hasNested = item.nestedNotes && item.nestedNotes.length > 0;
@@ -384,12 +384,10 @@ function getFilteredData() {
             }
         }
 
-        // 星號過濾
         if (state.onlyStarred && !item.is_starred) {
             return false;
         }
 
-        // 日期過濾
         const itemDateStr = item.clipped_at.substring(0, 10);
         if (state.startDate && itemDateStr < state.startDate) {
             return false;
@@ -398,7 +396,6 @@ function getFilteredData() {
             return false;
         }
 
-        // 關鍵字過濾（支援標註內容、書名、作者、以及附加之筆記內容）
         if (state.searchKeyword) {
             const kw = state.searchKeyword;
             const contentMatch = item.content && item.content.toLowerCase().includes(kw);
@@ -416,7 +413,7 @@ function getFilteredData() {
     });
 }
 
-// 9. 渲染標註卡片（緊密連寫，消除模板空白與換行）
+// 9. 渲染標註卡片
 function renderFilteredClippings() {
     const filtered = getFilteredData();
     clippingsCountEl.textContent = `共 ${filtered.length} 則紀錄`;
@@ -441,7 +438,6 @@ function renderFilteredClippings() {
         const starClass = isStarred ? "btn-star starred" : "btn-star";
         const isChecked = state.selectedClippingIds.has(Number(item.id)) ? "checked" : "";
 
-        // 巢狀筆記 HTML 組裝
         let nestedNotesHtml = "";
         if (item.nestedNotes && item.nestedNotes.length > 0) {
             const isExpanded = state.expandedNestedNoteIds.has(Number(item.id));
@@ -464,7 +460,7 @@ function renderFilteredClippings() {
     }).join("");
 }
 
-// 標註卡片與巢狀收合事件委派監聽器
+// 標註卡片事件委派監聽器
 function setupCardsEvents() {
     cardsContainer.addEventListener("click", (e) => {
         const toggleBtn = e.target.closest(".btn-toggle-nested");
@@ -671,12 +667,49 @@ async function submitBookNote(bookTitle, author, inputIndex) {
     }
 }
 
-// 12. Markdown 匯出
+// 通用剪貼簿相容寫入工具
+async function copyToClipboard(text) {
+    if (navigator.clipboard && window.isSecureContext) {
+        try {
+            await navigator.clipboard.writeText(text);
+            return true;
+        } catch (err) {
+            console.warn("Clipboard API 寫入受阻，啟動降級相容機制", err);
+        }
+    }
+
+    const textArea = document.createElement("textarea");
+    textArea.value = text;
+    textArea.style.position = "fixed";
+    textArea.style.left = "-9999px";
+    textArea.style.top = "-9999px";
+    textArea.setAttribute("readonly", "");
+    document.body.appendChild(textArea);
+    
+    textArea.focus();
+    textArea.select();
+
+    let success = false;
+    try {
+        success = document.execCommand("copy");
+    } catch (err) {
+        console.error("execCommand 複製失敗", err);
+    } finally {
+        document.body.removeChild(textArea);
+    }
+
+    return success;
+}
+
+// 12. Markdown 匯出（只複製有勾選之標註包含其筆記）
 function setupExportEvent() {
     exportMdBtn.addEventListener("click", async () => {
-        const items = getFilteredData();
+        const allFiltered = getFilteredData();
+        // 篩選出使用者勾選的項目
+        const items = allFiltered.filter(item => state.selectedClippingIds.has(Number(item.id)));
+
         if (items.length === 0) {
-            alert("目前篩選條件下沒有可匯出的內容。");
+            alert("請先勾選欲複製的標註！");
             return;
         }
 
@@ -710,6 +743,7 @@ function setupExportEvent() {
                     mdContent += `> 📌 ${starPrefix}**標註** (位置: ${item.location} | ${dateStr})\n>\n`;
                     mdContent += `> ${item.content.replace(/\n/g, "\n> ")}\n\n`;
 
+                    // 輸出該標註所包含的巢狀關聯筆記
                     if (item.nestedNotes && item.nestedNotes.length > 0) {
                         item.nestedNotes.forEach(n => {
                             const nDate = new Date(n.clipped_at).toLocaleDateString("zh-TW");
@@ -722,8 +756,9 @@ function setupExportEvent() {
             mdContent += `---\n\n`;
         }
 
-        try {
-            await navigator.clipboard.writeText(mdContent);
+        const isCopied = await copyToClipboard(mdContent);
+
+        if (isCopied) {
             const originalText = exportMdBtn.textContent;
             exportMdBtn.textContent = "已複製至剪貼簿！";
             exportMdBtn.classList.add("copied");
@@ -732,8 +767,8 @@ function setupExportEvent() {
                 exportMdBtn.textContent = originalText;
                 exportMdBtn.classList.remove("copied");
             }, 2000);
-        } catch (err) {
-            alert("寫入剪貼簿失敗，請檢查瀏覽器授權。");
+        } else {
+            alert("寫入剪貼簿失敗，請檢查瀏覽器複製權限。");
         }
     });
 

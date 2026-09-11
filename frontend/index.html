@@ -3,130 +3,145 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    
-    <!-- [安全強化] 加入 connect-src 允許與本地端 Python 伺服器 (Port 5000) 通訊 -->
-    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; connect-src 'self' http://127.0.0.1:5000; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:;">
-    <!-- [安全強化] 限制 Referrer 外洩 -->
-    <meta name="referrer" content="no-referrer">
-    
-    <title>Kindle 標註與書籍管理系統</title>
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; font-src 'self'; img-src 'self' data:; connect-src 'self';">
+    <title>Kindle 閱讀筆記管理系統</title>
     <link rel="stylesheet" href="style.css">
 </head>
 <body>
+    <!-- 頂部導覽列 -->
     <header class="navbar">
         <div class="header-container">
             <div class="brand-group">
-                <h1>Kindle Clippings Reader</h1>
+                <h1>Kindle 筆記管理</h1>
                 <nav class="tab-nav">
-                    <button class="tab-btn active" data-tab="clippingsTab">標註與筆記</button>
-                    <button class="tab-btn" data-tab="booksTab">書籍清單與心得</button>
+                    <button type="button" class="tab-btn active" data-tab="clippingsTab">標註與筆記</button>
+                    <button type="button" class="tab-btn" data-tab="booksTab">書籍心得清單</button>
                 </nav>
             </div>
             <div class="search-box">
-                <!-- [安全強化] 關閉自動完成與拼寫檢查，防止搜尋關鍵字外洩給瀏覽器供應商 -->
-                <input type="text" id="searchInput" placeholder="搜尋內容、書名或作者..." autocomplete="off" spellcheck="false">
+                <input type="text" id="searchInput" placeholder="搜尋書籍、作者、筆記或內文...">
             </div>
         </div>
     </header>
 
+    <!-- 主版面內容 -->
     <main class="main-layout">
-        <!-- 分頁一：標註與筆記檢視 -->
-        <div id="clippingsTab" class="tab-content active">
+        <!-- 標註與筆記分頁 -->
+        <section id="clippingsTab" class="tab-content active">
             <div class="tab-inner-layout">
-                <!-- 左側側邊欄 -->
+                <!-- 左側邊欄 -->
                 <aside class="sidebar">
-                    <section class="upload-section">
-                        <h3>上傳檔案</h3>
+                    <!-- 檔案匯入區塊 -->
+                    <div class="upload-section">
+                        <h3>匯入標註檔案</h3>
                         <div class="drop-zone" id="dropZone">
-                            <p>拖曳 My Clippings.txt 至此</p>
+                            <p>拖放 My Clippings.txt 至此</p>
                             <span>或</span>
-                            <label class="upload-btn">
-                                選擇檔案
-                                <input type="file" id="fileInput" accept=".txt" hidden>
-                            </label>
+                            <label class="upload-btn" for="fileInput">選取檔案</label>
+                            <input type="file" id="fileInput" accept=".txt" class="hidden-file-input">
                         </div>
-                        <div id="uploadStatus" class="upload-status"></div>
-                    </section>
 
-                    <section class="filter-section">
-                        <h3>條件篩選</h3>
+                        <!-- 書籍解析模式選單 -->
+                        <div class="format-select-group">
+                            <label for="formatSelect">書籍解析模式：</label>
+                            <select id="formatSelect" class="format-select">
+                                <option value="kfx" selected>新格式 (KFX)</option>
+                                <option value="legacy">舊版 (AZW3, MOBI)</option>
+                            </select>
+                        </div>
+
+                        <div class="upload-status" id="uploadStatus"></div>
+                    </div>
+
+                    <!-- 條件篩選區塊 -->
+                    <div class="filter-section">
+                        <h3>篩選過濾</h3>
                         <div class="filter-group">
-                            <label for="startDateInput">開始日期：</label>
+                            <label for="startDateInput">開始日期</label>
                             <input type="date" id="startDateInput">
                         </div>
                         <div class="filter-group">
-                            <label for="endDateInput">結束日期：</label>
+                            <label for="endDateInput">結束日期</label>
                             <input type="date" id="endDateInput">
                         </div>
                         <div class="filter-group-inline">
                             <input type="checkbox" id="starredOnlyCheckbox">
-                            <label for="starredOnlyCheckbox">僅顯示星號標註 (★)</label>
+                            <label for="starredOnlyCheckbox">只看已加星號 (★)</label>
                         </div>
                         <div class="filter-group-inline">
                             <input type="checkbox" id="hasNotesOnlyCheckbox">
                             <label for="hasNotesOnlyCheckbox">只看有筆記的標註 (💡)</label>
                         </div>
-                        <button id="clearFiltersBtn" class="btn-secondary">清除篩選條件</button>
-                    </section>
+                        <button type="button" id="clearFiltersBtn" class="btn-secondary btn-reset-filters">重設篩選條件</button>
+                    </div>
 
-                    <section class="books-section">
+                    <!-- 書籍分類清單 -->
+                    <div class="books-section">
                         <h3>書籍分類 (<span id="totalBooksCount">0</span>)</h3>
-                        <ul id="bookList" class="book-list">
-                            <li class="active" data-book="ALL">全部書籍</li>
+                        <ul class="book-list" id="bookList">
+                            <!-- 由 JavaScript 動態生成書籍清單 -->
                         </ul>
-                    </section>
+                    </div>
 
-                    <!-- 資料庫備份與還原區塊 -->
-                    <section class="database-section">
-                        <h3>資料庫維護</h3>
+                    <!-- 資料庫管理區塊 -->
+                    <div class="database-section">
+                        <h3>資料庫備份與還原</h3>
                         <div class="db-actions-vertical">
-                            <button id="backupDbBtn" class="btn-secondary">下載備份檔 (.db)</button>
-                            <label class="btn-secondary btn-file-label">
-                                還原備份檔 (.db)
-                                <input type="file" id="restoreDbFileInput" accept=".db, .sqlite" hidden>
-                            </label>
+                            <button type="button" id="backupDbBtn" class="btn-secondary">備份資料庫 (.db)</button>
+                            <label for="restoreDbFileInput" class="btn-secondary btn-file-label">還原資料庫</label>
+                            <input type="file" id="restoreDbFileInput" accept=".db,.sqlite" class="hidden-file-input">
                         </div>
-                        <div id="backupRestoreStatus" class="upload-status"></div>
-                    </section>
+                        <div class="upload-status" id="backupRestoreStatus"></div>
+                    </div>
                 </aside>
 
-                <!-- 右側主內容區 -->
-                <section class="content-area">
+                <!-- 右側主要內容展示區 -->
+                <div class="content-area">
                     <div class="content-header">
                         <div class="title-group">
                             <h2 id="currentBookTitle">全部書籍</h2>
-                            <span id="clippingsCount" class="badge">共 0 則紀錄</span>
+                            <span class="badge" id="clippingsCount">共 0 則紀錄</span>
                         </div>
                         <div class="header-action-group">
-                            <button id="exportMdBtn" class="btn-action">複製篩選內容 (剪貼簿)</button>
-                            <button id="downloadAllMdBtn" class="btn-action btn-download">下載完整資料庫 Markdown 檔</button>
+                            <button type="button" id="exportMdBtn" class="btn-action">選取標注複製至剪貼簿</button>
+                            <button type="button" id="downloadAllMdBtn" class="btn-action btn-download">匯出完整資料庫Markdown</button>
                         </div>
                     </div>
 
+                    <!-- 批次操作工具列 -->
                     <div class="batch-bar">
                         <div class="batch-select-group">
                             <input type="checkbox" id="selectAllCheckbox">
-                            <label for="selectAllCheckbox">全選目前頁面項目</label>
-                            <span id="selectedCountText" class="selected-text">已選取 0 則</span>
+                            <label for="selectAllCheckbox">全選目前頁面標註</label>
+                            <span class="selected-text" id="selectedCountText">已選取 0 則</span>
                         </div>
-                        <button id="batchDeleteBtn" class="btn-batch-delete" disabled>批次刪除選取項目</button>
+                        <button type="button" id="batchDeleteBtn" class="btn-batch-delete" disabled>批次刪除選取項目</button>
                     </div>
 
-                    <div id="cardsContainer" class="cards-grid"></div>
-                </section>
-            </div>
-        </div>
-
-        <!-- 分頁二：書籍清單與心得備註檢視 -->
-        <div id="booksTab" class="tab-content">
-            <section class="books-overview-area">
-                <div class="content-header">
-                    <h2>書籍清單與閱讀心得</h2>
-                    <span id="booksOverviewCount" class="badge">共 0 本書籍</span>
+                    <!-- 標註卡片清單網格 -->
+                    <div class="cards-grid" id="cardsContainer">
+                        <!-- 由 JavaScript 動態生成標註卡片 -->
+                    </div>
                 </div>
-                <div id="bookNotesList" class="book-notes-container"></div>
-            </section>
-        </div>
+            </div>
+        </section>
+
+        <!-- 書籍心得清單分頁 -->
+        <section id="booksTab" class="tab-content">
+            <div class="books-overview-area">
+                <div class="content-header">
+                    <div class="title-group">
+                        <h2>書籍心得與備註總覽</h2>
+                        <span class="badge" id="booksOverviewCount">共 0 本書籍</span>
+                    </div>
+                </div>
+
+                <!-- 書籍心得卡片清單 -->
+                <div class="book-notes-container" id="bookNotesList">
+                    <!-- 由 JavaScript 動態生成書籍心得卡片 -->
+                </div>
+            </div>
+        </section>
     </main>
 
     <script src="app.js"></script>

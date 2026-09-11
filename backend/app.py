@@ -27,46 +27,53 @@ def after_request(response):
     response.headers.add("Access-Control-Allow-Methods", "GET,PUT,POST,PATCH,DELETE,OPTIONS")
     return response
 
-@app.route("/api/upload", methods=["POST"])
+@app.route('/api/upload', methods=['POST'])
 def upload_clippings():
-    if "file" not in request.files:
-        return jsonify({"error": "未提供檔案"}), 400
+    if 'file' not in request.files:
+        return jsonify({"error": "缺少上傳檔案"}), 400
     
-    file = request.files["file"]
-    if file.filename == "":
+    file = request.files['file']
+    if file.filename == '':
         return jsonify({"error": "未選取檔案"}), 400
 
-    if not file.filename.lower().endswith('.txt'):
-        return jsonify({"error": "僅支援上傳 .txt 格式檔案"}), 400
+    format_mode = request.form.get("format", "kfx")
 
     try:
-        file_content = file.read().decode("utf-8-sig")
-    except UnicodeDecodeError:
-        return jsonify({"error": "檔案編碼錯誤，請確保為 UTF-8 格式"}), 400
+        content = file.read().decode('utf-8-sig', errors='ignore')
+        parsed_items = parse_clippings_file(content, mode=format_mode)
+        
+        inserted = 0
+        updated = 0
+        skipped = 0
 
-    items = parse_clippings_file(file_content)
-    stats = {"inserted": 0, "updated": 0, "skipped": 0}
-    for item in items:
-        status = upsert_clipping(
-            book_title=item["book_title"],
-            author=item["author"],
-            location=item["location"],
-            clipping_type=item["clipping_type"],
-            content=item["content"],
-            clipped_at=item["clipped_at"]
-        )
-        if status == "INSERTED":
-            stats["inserted"] += 1
-        elif status == "UPDATED":
-            stats["updated"] += 1
-        elif status == "SKIPPED":
-            stats["skipped"] += 1
+        for item in parsed_items:
+            res = upsert_clipping(
+                book_title=item["book_title"],
+                author=item["author"],
+                location=item["location"],
+                clipping_type=item["clipping_type"],
+                content=item["content"],
+                clipped_at=item["clipped_at"]
+            )
+            if res == "INSERTED":
+                inserted += 1
+            elif res == "UPDATED":
+                updated += 1
+            elif res == "SKIPPED":
+                skipped += 1
 
-    return jsonify({
-        "message": "檔案解析完成",
-        "total_parsed": len(items),
-        "statistics": stats
-    }), 200
+        return jsonify({
+            "message": "檔案處理完成",
+            "format_used": format_mode,
+            "statistics": {
+                "total_parsed": len(parsed_items),
+                "inserted": inserted,
+                "updated": updated,
+                "skipped": skipped
+            }
+        }), 200
+    except Exception as e:
+        return jsonify({"error": f"處理失敗: {str(e)}"}), 500
 
 @app.route("/api/clippings", methods=["GET"])
 def get_clippings():

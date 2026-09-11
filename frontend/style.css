@@ -13,6 +13,11 @@ body {
     min-height: 100vh;
 }
 
+/* 隱藏原生檔案輸入框（解決 CSP 阻擋 style 導致 Choose file 顯示之問題） */
+.hidden-file-input {
+    display: none !important;
+}
+
 /* 頂部導覽與頁籤 */
 .navbar {
     background-color: #FFFFFF;
@@ -173,6 +178,38 @@ body {
     color: #2ED573;
 }
 
+/* 書籍格式選擇選單 */
+.format-select-group {
+    margin-top: 0.75rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.35rem;
+}
+
+.format-select-group label {
+    font-size: 0.8rem;
+    color: #57606F;
+    font-weight: 500;
+}
+
+.format-select {
+    width: 100%;
+    padding: 0.45rem 0.6rem;
+    border: 1px solid #D9E2E8;
+    border-radius: 4px;
+    font-size: 0.85rem;
+    background-color: #FAFAFA;
+    color: #2F3542;
+    outline: none;
+    cursor: pointer;
+    transition: border-color 0.2s;
+}
+
+.format-select:focus {
+    border-color: #6B8E9F;
+    background-color: #FFFFFF;
+}
+
 .filter-section {
     display: flex;
     flex-direction: column;
@@ -220,6 +257,10 @@ body {
 
 .btn-secondary:hover {
     background-color: #E2DBD0;
+}
+
+.btn-reset-filters {
+    margin-top: 0.5rem;
 }
 
 .book-list {
@@ -344,7 +385,7 @@ body {
     pointer-events: none;
 }
 
-/* 卡片排版（調整間距與邊界） */
+/* 卡片排版 */
 .cards-grid {
     display: grid;
     grid-template-columns: 1fr;
