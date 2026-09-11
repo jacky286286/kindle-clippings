@@ -12,7 +12,7 @@ services:
     image: kindle_app-frontend:latest
     container_name: kindle_frontend
     ports:
-      - "80:80"
+      - "8686:80"
     depends_on:
       - backend
     restart: always
