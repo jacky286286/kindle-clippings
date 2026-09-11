@@ -344,19 +344,19 @@ body {
     pointer-events: none;
 }
 
-/* 卡片排版 */
+/* 卡片排版（調整間距與邊界） */
 .cards-grid {
     display: grid;
     grid-template-columns: 1fr;
-    gap: 1rem;
+    gap: 0.75rem;
 }
 
 .card {
     background-color: #FFFFFF;
-    border-radius: 8px;
-    border-left: 5px solid #CBD5E1;
-    padding: 1.25rem;
-    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
+    border-radius: 6px;
+    border-left: 4px solid #CBD5E1;
+    padding: 0.75rem 1rem;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04);
 }
 
 .card.highlight {
@@ -374,7 +374,7 @@ body {
     align-items: center;
     font-size: 0.8rem;
     color: #8892B0;
-    margin-bottom: 0.75rem;
+    margin-bottom: 0.4rem;
 }
 
 .card-header-left {
@@ -402,15 +402,17 @@ body {
 
 .card-body {
     font-size: 0.95rem;
-    line-height: 1.6;
+    line-height: 1.55;
     color: #2D3748;
     white-space: pre-wrap;
     word-break: break-word;
+    text-align: justify;
+    text-justify: inter-ideograph;
 }
 
 .card-footer {
-    margin-top: 0.75rem;
-    padding-top: 0.5rem;
+    margin-top: 0.45rem;
+    padding-top: 0.35rem;
     border-top: 1px solid #F1F5F9;
     font-size: 0.8rem;
     color: #718096;
@@ -594,7 +596,6 @@ body {
    ========================================================================== */
 
 @media (max-width: 768px) {
-    /* 1. 導覽列：垂直堆疊並撐滿寬度 */
     .navbar {
         padding: 0.75rem 1rem;
     }
@@ -633,7 +634,6 @@ body {
         width: 100%;
     }
 
-    /* 2. 主版面：切換為單欄垂直排列 */
     .main-layout {
         margin: 1rem auto;
         padding: 0 0.75rem;
@@ -652,7 +652,6 @@ body {
         max-height: 200px;
     }
 
-    /* 3. 內容標頭與按鈕組：堆疊並擴增觸控區域 */
     .content-header {
         flex-direction: column;
         align-items: stretch;
@@ -670,7 +669,6 @@ body {
         padding: 0.6rem 1rem;
     }
 
-    /* 4. 批次操作列：垂直排列 */
     .batch-bar {
         flex-direction: column;
         align-items: stretch;
@@ -683,9 +681,8 @@ body {
         padding: 0.5rem;
     }
 
-    /* 5. 卡片細節適配 */
     .card {
-        padding: 1rem;
+        padding: 0.75rem;
     }
 
     .card-footer {
@@ -693,7 +690,6 @@ body {
         gap: 0.25rem;
     }
 
-    /* 6. 書籍心得清單：由橫向雙欄轉為縱向單欄 */
     .book-note-card {
         flex-direction: column;
         padding: 1rem;
@@ -727,4 +723,79 @@ body {
     .btn-delete {
         align-self: flex-end;
     }
+}
+
+/* ==========================================================================
+   巢狀筆記收合區塊樣式
+   ========================================================================== */
+
+.nested-notes-wrapper {
+    margin-top: 0.65rem;
+    padding-top: 0.5rem;
+    border-top: 1px dashed #E2E8F0;
+}
+
+.btn-toggle-nested {
+    background: #F8FAFC;
+    border: 1px solid #CBD5E1;
+    color: #475569;
+    padding: 0.25rem 0.5rem;
+    border-radius: 4px;
+    font-size: 0.75rem;
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    transition: background-color 0.15s, border-color 0.15s;
+}
+
+.btn-toggle-nested:hover {
+    background: #EDF2F7;
+    border-color: #94A3B8;
+    color: #1E293B;
+}
+
+.toggle-icon {
+    font-size: 0.75rem;
+    color: #64748B;
+}
+
+.nested-notes-content {
+    margin-top: 0.5rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.4rem;
+}
+
+.nested-note-item {
+    background-color: #FCF9FA;
+    border: 1px solid #EADCE0;
+    border-left: 3px solid #A37081;
+    border-radius: 4px;
+    padding: 0.5rem 0.75rem;
+}
+
+.nested-note-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    font-size: 0.75rem;
+    color: #8892B0;
+    margin-bottom: 0.3rem;
+}
+
+.nested-note-header-left {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+}
+
+.nested-note-body {
+    font-size: 0.9rem;
+    color: #2D3748;
+    line-height: 1.5;
+    white-space: pre-wrap;
+    word-break: break-word;
+    text-align: justify;
+    text-justify: inter-ideograph;
 }

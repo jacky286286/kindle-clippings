@@ -9,8 +9,10 @@ let state = {
     startDate: "",
     endDate: "",
     onlyStarred: false,
+    hasNotesOnly: false, // 篩選有筆記之標註開關
     selectedClippingIds: new Set(),
-    editingBookTitle: null
+    editingBookTitle: null,
+    expandedNestedNoteIds: new Set()
 };
 
 // DOM 快取
@@ -29,6 +31,7 @@ const downloadAllMdBtn = document.getElementById("downloadAllMdBtn");
 const startDateInput = document.getElementById("startDateInput");
 const endDateInput = document.getElementById("endDateInput");
 const starredOnlyCheckbox = document.getElementById("starredOnlyCheckbox");
+const hasNotesOnlyCheckbox = document.getElementById("hasNotesOnlyCheckbox");
 const clearFiltersBtn = document.getElementById("clearFiltersBtn");
 
 const selectAllCheckbox = document.getElementById("selectAllCheckbox");
@@ -54,9 +57,19 @@ function initApp() {
     setupFilterEvents();
     setupBatchEvents();
     setupBackupRestoreEvents();
+    setupCardsEvents();
+    setupBookNotesEvents();
     
     fetchClippings();
     fetchBooksWithNotes();
+}
+
+function parseLocationRange(locStr) {
+    if (!locStr) return null;
+    const nums = (String(locStr).match(/\d+/g) || []).map(Number);
+    if (nums.length === 0) return null;
+    if (nums.length === 1) return [nums[0], nums[0]];
+    return [Math.min(nums[0], nums[1]), Math.max(nums[0], nums[1])];
 }
 
 // 1. 分頁切換
@@ -160,7 +173,7 @@ async function uploadFile(file) {
         uploadStatus.style.color = "#E55039";
         uploadStatus.textContent = `錯誤: ${error.message}`;
     } finally {
-        fileInput.value = ""; // 清除選取狀態
+        fileInput.value = "";
     }
 }
 
@@ -192,13 +205,22 @@ function setupFilterEvents() {
         renderFilteredClippings();
     });
 
+    if (hasNotesOnlyCheckbox) {
+        hasNotesOnlyCheckbox.addEventListener("change", (e) => {
+            state.hasNotesOnly = e.target.checked;
+            renderFilteredClippings();
+        });
+    }
+
     clearFiltersBtn.addEventListener("click", () => {
         state.startDate = "";
         state.endDate = "";
         state.onlyStarred = false;
+        state.hasNotesOnly = false;
         startDateInput.value = "";
         endDateInput.value = "";
         starredOnlyCheckbox.checked = false;
+        if (hasNotesOnlyCheckbox) hasNotesOnlyCheckbox.checked = false;
         renderFilteredClippings();
     });
 }
@@ -223,7 +245,6 @@ function setupBatchEvents() {
         const confirmed = window.confirm(`確定要批次刪除選取的 ${idsToDelete.length} 則紀錄嗎？此動作無法復原。`);
         if (!confirmed) return;
 
-        // 防範重複點擊 (Race Condition)
         batchDeleteBtn.disabled = true;
 
         try {
@@ -244,7 +265,7 @@ function setupBatchEvents() {
             fetchBooksWithNotes();
         } catch (error) {
             alert(`批次刪除錯誤: ${error.message}`);
-            updateBatchBar(); // 失敗則恢復按鈕狀態
+            updateBatchBar();
         }
     });
 }
@@ -282,7 +303,7 @@ function renderSidebarBooks() {
     const bookTitles = Object.keys(bookMap);
     totalBooksCountEl.textContent = bookTitles.length;
 
-    bookListEl.innerHTML = ""; // 清空
+    bookListEl.innerHTML = "";
 
     const allLi = document.createElement("li");
     allLi.className = state.selectedBook === 'ALL' ? 'active' : '';
@@ -294,7 +315,7 @@ function renderSidebarBooks() {
     bookTitles.forEach(title => {
         const li = document.createElement("li");
         li.textContent = `${title} (${bookMap[title]})`;
-        li.dataset.book = title; // 已透過 DOM property 安全賦值
+        li.dataset.book = title;
         if (state.selectedBook === title) li.classList.add("active");
 
         li.addEventListener("click", () => handleBookSelection(li, title, title));
@@ -310,16 +331,65 @@ function handleBookSelection(element, bookId, displayTitle) {
     renderFilteredClippings();
 }
 
-// 8. 取得篩選後資料
+// 8. 整合筆記巢狀結構與多維度過濾
 function getFilteredData() {
-    return state.allClippings.filter(item => {
+    // 先在全域資料集中完成筆記與標註的位置區間包含比對
+    const items = state.allClippings.map(item => ({ ...item, nestedNotes: [] }));
+    const notes = items.filter(i => i.clipping_type.toLowerCase() === "note");
+    const highlights = items.filter(i => i.clipping_type.toLowerCase() !== "note");
+    const nestedNoteIds = new Set();
+
+    notes.forEach(note => {
+        const noteRange = parseLocationRange(note.location);
+        if (!noteRange) return;
+
+        let matchedHl = null;
+        let smallestSpan = Infinity;
+
+        highlights.forEach(hl => {
+            if (hl.book_title !== note.book_title) return;
+            const hlRange = parseLocationRange(hl.location);
+            if (!hlRange) return;
+
+            if (hlRange[0] <= noteRange[0] && noteRange[1] <= hlRange[1]) {
+                const span = hlRange[1] - hlRange[0];
+                if (span < smallestSpan) {
+                    smallestSpan = span;
+                    matchedHl = hl;
+                }
+            }
+        });
+
+        if (matchedHl) {
+            matchedHl.nestedNotes.push(note);
+            nestedNoteIds.add(note.id);
+        }
+    });
+
+    // 排除已被包含在標註下的獨立筆記，只處理頂層卡片
+    const topLevelItems = items.filter(item => !nestedNoteIds.has(item.id));
+
+    return topLevelItems.filter(item => {
+        // 書籍選取過濾
         if (state.selectedBook !== "ALL" && item.book_title !== state.selectedBook) {
             return false;
         }
+
+        // 「只看有筆記的標註」核心篩選：排除純筆記，且標註內必須包含至少 1 則關聯筆記
+        if (state.hasNotesOnly) {
+            const isHighlight = item.clipping_type.toLowerCase() !== "note";
+            const hasNested = item.nestedNotes && item.nestedNotes.length > 0;
+            if (!isHighlight || !hasNested) {
+                return false;
+            }
+        }
+
+        // 星號過濾
         if (state.onlyStarred && !item.is_starred) {
             return false;
         }
 
+        // 日期過濾
         const itemDateStr = item.clipped_at.substring(0, 10);
         if (state.startDate && itemDateStr < state.startDate) {
             return false;
@@ -328,20 +398,25 @@ function getFilteredData() {
             return false;
         }
 
+        // 關鍵字過濾（支援標註內容、書名、作者、以及附加之筆記內容）
         if (state.searchKeyword) {
             const kw = state.searchKeyword;
             const contentMatch = item.content && item.content.toLowerCase().includes(kw);
             const titleMatch = item.book_title && item.book_title.toLowerCase().includes(kw);
             const authorMatch = item.author && item.author.toLowerCase().includes(kw);
-            if (!contentMatch && !titleMatch && !authorMatch) {
+            const nestedMatch = item.nestedNotes && item.nestedNotes.some(
+                n => n.content && n.content.toLowerCase().includes(kw)
+            );
+            if (!contentMatch && !titleMatch && !authorMatch && !nestedMatch) {
                 return false;
             }
         }
+
         return true;
     });
 }
 
-// 9. 渲染標註卡片
+// 9. 渲染標註卡片（緊密連寫，消除模板空白與換行）
 function renderFilteredClippings() {
     const filtered = getFilteredData();
     clippingsCountEl.textContent = `共 ${filtered.length} 則紀錄`;
@@ -366,27 +441,72 @@ function renderFilteredClippings() {
         const starClass = isStarred ? "btn-star starred" : "btn-star";
         const isChecked = state.selectedClippingIds.has(Number(item.id)) ? "checked" : "";
 
-        return `
-            <article class="card ${typeClass}" id="card-${item.id}">
-                <div class="card-header">
-                    <div class="card-header-left">
-                        <input type="checkbox" ${isChecked} onchange="toggleSelectClipping(${item.id})">
-                        <button class="${starClass}" title="切換星號" onclick="toggleStar(${item.id}, ${!isStarred})">${starIcon}</button>
-                        <span class="tag ${typeClass}">${typeLabel}</span>
-                        <span>位置: ${escapeHTML(item.location)}</span>
-                    </div>
-                    <button class="btn-delete" onclick="handleDelete(${item.id})">刪除</button>
-                </div>
+        // 巢狀筆記 HTML 組裝
+        let nestedNotesHtml = "";
+        if (item.nestedNotes && item.nestedNotes.length > 0) {
+            const isExpanded = state.expandedNestedNoteIds.has(Number(item.id));
+            const displayStyle = isExpanded ? "flex" : "none";
+            const iconText = isExpanded ? "▼" : "▶";
 
-                <div class="card-body">${escapeHTML(item.content)}</div>
+            nestedNotesHtml = `<div class="nested-notes-wrapper"><button type="button" class="btn-toggle-nested" data-hl-id="${item.id}"><span class="toggle-icon">${iconText}</span><span>關聯筆記 (${item.nestedNotes.length})</span></button><div class="nested-notes-content" id="nested-notes-${item.id}" style="display: ${displayStyle};">${item.nestedNotes.map(n => {
+                const nDate = new Date(n.clipped_at).toLocaleString("zh-TW", {
+                    year: "numeric", month: "2-digit", day: "2-digit",
+                    hour: "2-digit", minute: "2-digit"
+                });
+                const cleanNoteContent = escapeHTML((n.content || "").trim());
+                return `<div class="nested-note-item" id="card-${n.id}"><div class="nested-note-header"><div class="nested-note-header-left"><span class="tag note">筆記</span><span>位置: ${escapeHTML(n.location)}</span><span>記錄於: ${nDate}</span></div><button class="btn-delete btn-delete-clipping" data-id="${n.id}">刪除筆記</button></div><div class="nested-note-body">${cleanNoteContent}</div></div>`;
+            }).join("")}</div></div>`;
+        }
 
-                <div class="card-footer">
-                    <span>${escapeHTML(item.book_title)} (${escapeHTML(item.author)})</span>
-                    <span>記錄於: ${formattedDate}</span>
-                </div>
-            </article>
-        `;
+        const cleanMainContent = escapeHTML((item.content || "").trim());
+
+        return `<article class="card ${typeClass}" id="card-${item.id}"><div class="card-header"><div class="card-header-left"><input type="checkbox" class="clipping-checkbox" data-id="${item.id}" ${isChecked}><button class="${starClass} btn-toggle-star" data-id="${item.id}" data-starred="${!isStarred}" title="切換星號">${starIcon}</button><span class="tag ${typeClass}">${typeLabel}</span><span>位置: ${escapeHTML(item.location)}</span></div><button class="btn-delete btn-delete-clipping" data-id="${item.id}">刪除</button></div><div class="card-body">${cleanMainContent}${nestedNotesHtml}</div><div class="card-footer"><span>${escapeHTML(item.book_title)} (${escapeHTML(item.author)})</span><span>記錄於: ${formattedDate}</span></div></article>`;
     }).join("");
+}
+
+// 標註卡片與巢狀收合事件委派監聽器
+function setupCardsEvents() {
+    cardsContainer.addEventListener("click", (e) => {
+        const toggleBtn = e.target.closest(".btn-toggle-nested");
+        if (toggleBtn) {
+            const hlId = Number(toggleBtn.dataset.hlId);
+            const contentEl = document.getElementById(`nested-notes-${hlId}`);
+            const iconEl = toggleBtn.querySelector(".toggle-icon");
+            if (contentEl) {
+                const isHidden = contentEl.style.display === "none";
+                contentEl.style.display = isHidden ? "flex" : "none";
+                if (iconEl) iconEl.textContent = isHidden ? "▼" : "▶";
+
+                if (isHidden) {
+                    state.expandedNestedNoteIds.add(hlId);
+                } else {
+                    state.expandedNestedNoteIds.delete(hlId);
+                }
+            }
+            return;
+        }
+
+        const deleteBtn = e.target.closest(".btn-delete-clipping");
+        if (deleteBtn) {
+            handleDelete(Number(deleteBtn.dataset.id));
+            return;
+        }
+
+        const starBtn = e.target.closest(".btn-toggle-star");
+        if (starBtn) {
+            const id = Number(starBtn.dataset.id);
+            const nextStatus = starBtn.dataset.starred === "true";
+            toggleStar(id, nextStatus);
+            return;
+        }
+    });
+
+    cardsContainer.addEventListener("change", (e) => {
+        const checkbox = e.target.closest(".clipping-checkbox");
+        if (checkbox) {
+            toggleSelectClipping(Number(checkbox.dataset.id));
+        }
+    });
 }
 
 // 10. 星號與刪除
@@ -451,7 +571,7 @@ function renderBooksOverview() {
         const hasNote = b.note && b.note.trim().length > 0;
 
         return `
-            <div class="book-note-card">
+            <div class="book-note-card" data-book-title="${escapeHTML(b.book_title)}">
                 <div class="book-info-col">
                     <h3>${escapeHTML(b.book_title)}</h3>
                     <span class="author">${escapeHTML(b.author)}</span>
@@ -463,15 +583,15 @@ function renderBooksOverview() {
                         <div class="note-edit-view">
                             <textarea id="note-input-${index}" placeholder="輸入您對《${escapeHTML(b.book_title)}》的心得備註...">${escapeHTML(b.note)}</textarea>
                             <div class="note-actions">
-                                <button class="btn-secondary" onclick="cancelEditBookNote()">取消</button>
-                                <button class="btn-action" onclick="submitBookNote('${escapeAttr(b.book_title)}', '${escapeAttr(b.author)}', ${index})">儲存</button>
+                                <button class="btn-secondary btn-cancel-note" type="button">取消</button>
+                                <button class="btn-action btn-save-note" type="button" data-index="${index}" data-book-title="${escapeHTML(b.book_title)}" data-author="${escapeHTML(b.author)}">儲存</button>
                             </div>
                         </div>
                     ` : `
                         <div class="note-display-view">
                             <div class="note-text ${!hasNote ? 'note-placeholder' : ''}">${hasNote ? escapeHTML(b.note) : '尚未填寫閱讀心得備註...'}</div>
                             <div class="note-actions">
-                                <button class="btn-secondary" onclick="startEditBookNote('${escapeAttr(b.book_title)}')">
+                                <button class="btn-secondary btn-edit-note" type="button" data-book-title="${escapeHTML(b.book_title)}">
                                     ${hasNote ? '修改心得' : '新增心得'}
                                 </button>
                             </div>
@@ -483,9 +603,40 @@ function renderBooksOverview() {
     }).join("");
 }
 
+function setupBookNotesEvents() {
+    bookNotesListEl.addEventListener("click", (e) => {
+        const editBtn = e.target.closest(".btn-edit-note");
+        if (editBtn) {
+            startEditBookNote(editBtn.dataset.bookTitle);
+            return;
+        }
+
+        if (e.target.closest(".btn-cancel-note")) {
+            cancelEditBookNote();
+            return;
+        }
+
+        const saveBtn = e.target.closest(".btn-save-note");
+        if (saveBtn) {
+            const title = saveBtn.dataset.bookTitle;
+            const author = saveBtn.dataset.author;
+            const index = saveBtn.dataset.index;
+            submitBookNote(title, author, index);
+            return;
+        }
+    });
+}
+
 function startEditBookNote(bookTitle) {
     state.editingBookTitle = bookTitle;
     renderBooksOverview();
+
+    const activeTextarea = document.querySelector(".note-edit-view textarea");
+    if (activeTextarea) {
+        activeTextarea.focus();
+        const len = activeTextarea.value.length;
+        activeTextarea.setSelectionRange(len, len);
+    }
 }
 
 function cancelEditBookNote() {
@@ -495,6 +646,7 @@ function cancelEditBookNote() {
 
 async function submitBookNote(bookTitle, author, inputIndex) {
     const textarea = document.getElementById(`note-input-${inputIndex}`);
+    if (!textarea) return;
     const noteText = textarea.value.trim();
 
     try {
@@ -557,6 +709,14 @@ function setupExportEvent() {
                 } else {
                     mdContent += `> 📌 ${starPrefix}**標註** (位置: ${item.location} | ${dateStr})\n>\n`;
                     mdContent += `> ${item.content.replace(/\n/g, "\n> ")}\n\n`;
+
+                    if (item.nestedNotes && item.nestedNotes.length > 0) {
+                        item.nestedNotes.forEach(n => {
+                            const nDate = new Date(n.clipped_at).toLocaleDateString("zh-TW");
+                            mdContent += `>> 💡 **附註筆記** (位置: ${n.location} | ${nDate})\n>>\n`;
+                            mdContent += `>> ${n.content.replace(/\n/g, "\n>> ")}\n\n`;
+                        });
+                    }
                 }
             });
             mdContent += `---\n\n`;
@@ -582,7 +742,7 @@ function setupExportEvent() {
     });
 }
 
-// 13. 資料庫備份與還原事件處理
+// 13. 資料庫備份與還原
 function setupBackupRestoreEvents() {
     backupDbBtn.addEventListener("click", () => {
         window.location.href = `${API_BASE}/backup`;
@@ -600,7 +760,6 @@ function setupBackupRestoreEvents() {
             return;
         }
 
-        // 防範重複觸發
         restoreDbFileInput.disabled = true;
 
         const formData = new FormData();
@@ -640,11 +799,4 @@ function escapeHTML(str) {
         .replace(/>/g, "&gt;")
         .replace(/"/g, "&quot;")
         .replace(/'/g, "&#039;");
-}
-
-function escapeAttr(str) {
-    if (str == null) return "";
-    return String(str)
-        .replace(/'/g, "&#039;")
-        .replace(/"/g, "&quot;");
 }
